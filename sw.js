@@ -1,6 +1,6 @@
 // Gastos del mes · service worker: permite abrir la app sin internet.
 // Si cambiás index.html, subí también este archivo con VERSION nueva para que el celular tome los cambios.
-const VERSION = "gastos-v2";
+const VERSION = "gastos-v3";
 const APP = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./maskable-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
@@ -14,7 +14,7 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   // Firebase (datos y login) siempre por la red
-  if (/firestore\.googleapis|identitytoolkit|securetoken|googleapis\.com\/identity|firebaseapp\.com/.test(url.href)) return;
+  if (url.hostname === "api.github.com") return;
   // la página: primero la red (para tomar cambios), si no hay internet, la copia guardada
   if (req.mode === "navigate") {
     e.respondWith(fetch(req).then((r) => { const cp = r.clone(); caches.open(VERSION).then((c) => c.put("./index.html", cp)); return r; }).catch(() => caches.match("./index.html")));

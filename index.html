@@ -12,7 +12,6 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Gastos del mes</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap">
 <style>
@@ -302,19 +301,20 @@ dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16
   .lrow > .c-note { grid-column: 1 / 3; }
   .lrow > .c-qty, .lrow > .c-price, .lrow > .c-monto, .lrow > .c-pend, .lrow > .c-state { grid-column: auto; }
   .lrow.head { display: none; }
+  .list.pend .lrow > .c-state { grid-column: 1 / 4; } .list.pend .lrow > .c-state .paybtn { justify-self: start; }
+  .list.pend .lrow > .c-state { display: flex; justify-content: flex-end; }
   .lrow .mlabel { display: block; }
 }
 .mlabel { display: none; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding-left: 7px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 html { color-scheme: light; }
-:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
-.install-btn { margin: 6px 8px 0; }
 body { margin: 0; }
 img { max-width: 100%; }
-#login { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
-.login-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 28px; max-width: 360px; width: 100%; display: flex; flex-direction: column; gap: 12px; text-align: center; }
-.login-card b { font-family: var(--font-display); font-size: 24px; }
-.login-card p { margin: 0; color: var(--ink-2); } .login-err { color: var(--bad) !important; font-size: 13px; }
+:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+.install-btn { margin: 6px 8px 0; }
+label.sf { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 10px; }
+label.sf input { font-weight: 400; font-size: 15px; }
+.sf-err { color: var(--bad) !important; font-size: 13px; min-height: 1em; }
 </style>
 </head>
 <body>
@@ -352,59 +352,55 @@ window.DATOS_INICIALES = { meses: {}, secciones: {} };
 </script>
 <script>
 /* ==========================================================================
-   GASTOS DEL MES · configuración
+   GASTOS DEL MES · dónde se guardan los datos
    --------------------------------------------------------------------------
-   MODO 1 (sin configurar nada): los datos se guardan en ESTE navegador.
-     Usá "Descargar respaldo" / "Cargar respaldo" del menú para pasarlos
-     a otro dispositivo o tener una copia.
-   MODO 2 (sincronizado entre celular y compu): creá un proyecto gratis en
-     https://console.firebase.google.com, activá Firestore y el inicio de
-     sesión con Google, y pegá abajo la configuración web del proyecto y tu
-     email. Las instrucciones completas están al final de este archivo.
+   - Sin configurar: en este navegador (usá Descargar / Cargar respaldo).
+   - Sincronizado: en un repositorio PRIVADO de tu cuenta de GitHub
+     (archivo datos.json). Se configura desde la app: menú
+     "Sincronizar entre dispositivos…". El token queda guardado solo en cada
+     dispositivo, nunca en este archivo.
    ========================================================================== */
-const FIREBASE_CONFIG = null;
-/* Ejemplo:
-const FIREBASE_CONFIG = {
-  apiKey: "AIza...",
-  authDomain: "mis-gastos.firebaseapp.com",
-  projectId: "mis-gastos",
-  storageBucket: "mis-gastos.appspot.com",
-  messagingSenderId: "123456789",
-  appId: "1:123456789:web:abc123"
-};
-*/
-const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
-
 (function () {
   const COLLS = ["meses", "secciones"];
+  const KEY = "gastos-mes-datos-v1";          // datos (caché local)
+  const CFG = "gastos-mes-sync-github";        // {owner, repo, token}
+  const STATE = "gastos-mes-sync-estado";      // {sha, pend:[...]}
+  const ARCHIVO = "datos.json";
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const seed = () => clone(window.DATOS_INICIALES || { meses: {}, secciones: {} });
+  const lsGet = (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+  const lsDel = (k) => { try { localStorage.removeItem(k); } catch (e) {} };
 
-  // ---------- Modo 1: navegador (localStorage) ----------
-  function localDB() {
-    const KEY = "gastos-mes-datos-v1";
-    let data;
-    try { data = JSON.parse(localStorage.getItem(KEY)); } catch (e) { data = null; }
-    if (!data || !data.meses) { data = seed(); persist(); }
+  function statusText(kind, text) {
+    document.querySelectorAll(".status").forEach((s) => { s.className = "status " + (kind || ""); const sp = s.querySelector("span"); if (sp) sp.textContent = text; s.title = text; });
+  }
+
+  // ---------- base común: caché local con oyentes ----------
+  function baseStore() {
+    let data = lsGet(KEY);
+    if (!data || !data.meses) { data = seed(); lsSet(KEY, data); }
+    for (const c of COLLS) data[c] = data[c] || {};
     const listeners = { meses: [], secciones: [] };
-    function persist() { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) { alert("No se pudo guardar en el navegador: " + e.message); } }
-    const snapOf = (changes) => ({ metadata: { fromCache: false, hasPendingWrites: false }, docChanges: () => changes });
+    const snapOf = (ch) => ({ metadata: { fromCache: false, hasPendingWrites: false }, docChanges: () => ch });
     const docSnap = (c, id) => ({ id, exists: true, data: () => clone(data[c][id]) });
-    window.addEventListener("storage", (e) => {
-      if (e.key !== KEY || !e.newValue) return;
-      const old = data; data = JSON.parse(e.newValue);
-      for (const c of COLLS) {
-        const ch = [];
-        for (const id in data[c]) if (JSON.stringify(data[c][id]) !== JSON.stringify((old[c] || {})[id])) ch.push({ type: "modified", doc: docSnap(c, id) });
-        for (const id in old[c] || {}) if (!(id in data[c])) ch.push({ type: "removed", doc: { id, data: () => old[c][id] } });
-        if (ch.length) listeners[c].forEach((fn) => fn(snapOf(ch)));
-      }
-    });
-    return {
-      modo: "local",
-      reemplazarTodo(nuevo) { data = { meses: nuevo.meses || {}, secciones: nuevo.secciones || {} }; persist(); },
-      collection(c) {
-        data[c] = data[c] || {};
+    const st = {
+      get data() { return data; },
+      persist() { if (!lsSet(KEY, data)) alert("No hay espacio para guardar en este navegador."); },
+      // reemplaza todo y avisa a la página qué cambió
+      applyRemote(nuevo, skip) {
+        const old = data; data = { meses: nuevo.meses || {}, secciones: nuevo.secciones || {} };
+        // lo pendiente de este dispositivo se mantiene encima
+        if (skip) for (const k of skip) { const [c, id] = k.split("/"); if (old[c] && id in old[c]) data[c][id] = old[c][id]; else if (data[c]) delete data[c][id]; }
+        st.persist();
+        for (const c of COLLS) {
+          const ch = [];
+          for (const id in data[c]) if (JSON.stringify(data[c][id]) !== JSON.stringify(old[c][id])) ch.push({ type: old[c][id] ? "modified" : "added", doc: docSnap(c, id) });
+          for (const id in old[c]) if (!(id in data[c])) ch.push({ type: "removed", doc: { id, data: () => old[c][id] } });
+          if (ch.length) listeners[c].forEach((fn) => fn(snapOf(ch)));
+        }
+      },
+      collection(c, onWrite) {
         return {
           onSnapshot(next) {
             listeners[c].push(next);
@@ -413,74 +409,221 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
           },
           doc(id) {
             return {
-              async set(d) { data[c][id] = clone(d); persist(); },
-              async delete() { delete data[c][id]; persist(); },
+              async set(d) { data[c][id] = clone(d); st.persist(); onWrite && onWrite(c + "/" + id); },
+              async delete() { delete data[c][id]; st.persist(); onWrite && onWrite(c + "/" + id); },
             };
           },
         };
       },
     };
+    window.addEventListener("storage", (e) => { if (e.key === KEY && e.newValue) st.applyRemote(JSON.parse(e.newValue)); });
+    return st;
   }
 
-  // ---------- Modo 2: Firebase (sincronizado) ----------
-  function loadScript(src) { return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = () => bad(new Error("No se pudo cargar " + src)); document.head.appendChild(s); }); }
-  async function firebaseDB() {
-    const V = "10.12.2", base = "https://www.gstatic.com/firebasejs/" + V + "/";
-    await loadScript(base + "firebase-app-compat.js");
-    await loadScript(base + "firebase-auth-compat.js");
-    await loadScript(base + "firebase-firestore-compat.js");
-    firebase.initializeApp(FIREBASE_CONFIG);
-    const auth = firebase.auth();
-    const user = await new Promise((resolve) => {
-      const off = auth.onAuthStateChanged((u) => { if (u) { off(); resolve(u); } else mostrarLogin(auth); });
-    });
-    if (EMAIL_PERMITIDO && user.email.toLowerCase() !== EMAIL_PERMITIDO.toLowerCase()) {
-      await auth.signOut();
-      throw new Error("La cuenta " + user.email + " no tiene permiso para ver estos gastos.");
-    }
-    ocultarLogin();
-    const fs = firebase.firestore();
-    try { await fs.enablePersistence({ synchronizeTabs: true }); } catch (e) { /* sin modo offline, no pasa nada */ }
-    // primera vez: cargar los datos iniciales
-    const vacio = (await fs.collection("meses").limit(1).get()).empty;
-    if (vacio) {
-      const s = seed(), batch = fs.batch();
-      for (const c of COLLS) for (const id in s[c]) batch.set(fs.collection(c).doc(id), s[c][id]);
-      await batch.commit();
+  // ---------- Modo 1: solo este navegador ----------
+  function localDB() {
+    const st = baseStore();
+    return {
+      modo: "local",
+      reemplazarTodo(nuevo) { st.applyRemote(nuevo); },
+      collection: (c) => st.collection(c),
+    };
+  }
+
+  // ---------- Modo 2: sincronizado con un repo privado de GitHub ----------
+  const b64enc = (s) => { const bytes = new TextEncoder().encode(s); let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(bin); };
+  const b64dec = (b) => { const bin = atob(b.replace(/\n/g, "")); const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); return new TextDecoder().decode(bytes); };
+
+  function ghApi(cfg) {
+    const url = "https://api.github.com/repos/" + encodeURIComponent(cfg.owner) + "/" + encodeURIComponent(cfg.repo) + "/contents/" + ARCHIVO;
+    const headers = { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+    async function errorDe(r) {
+      let msg = ""; try { msg = (await r.json()).message || ""; } catch (e) {}
+      if (r.status === 401) return new Error("El token no es válido o venció. Creá uno nuevo y volvé a conectar.");
+      if (r.status === 403) return new Error("El token no tiene permiso de escritura (Contents: Read and write) en ese repositorio.");
+      if (r.status === 404) return new Error("No encuentro el repositorio " + cfg.owner + "/" + cfg.repo + ", o el token no tiene acceso a él.");
+      return new Error("GitHub respondió " + r.status + (msg ? ": " + msg : ""));
     }
     return {
-      modo: "firebase", usuario: user.email, salir: () => auth.signOut().then(() => location.reload()),
-      async reemplazarTodo(nuevo) {
-        for (const c of COLLS) {
-          const actuales = await fs.collection(c).get(); const b = fs.batch();
-          actuales.forEach((d) => { if (!(nuevo[c] || {})[d.id]) b.delete(d.ref); });
-          for (const id in nuevo[c] || {}) b.set(fs.collection(c).doc(id), nuevo[c][id]);
-          await b.commit();
-        }
+      async probarRepo() {
+        const r = await fetch("https://api.github.com/repos/" + encodeURIComponent(cfg.owner) + "/" + encodeURIComponent(cfg.repo), { headers, cache: "no-store" });
+        if (!r.ok) throw await errorDe(r);
+        const j = await r.json();
+        return { privado: !!j.private };
       },
-      collection(c) {
-        return {
-          onSnapshot: (next, err) => fs.collection(c).onSnapshot(next, err),
-          doc: (id) => ({ set: (d) => fs.collection(c).doc(id).set(d), delete: () => fs.collection(c).doc(id).delete() }),
-        };
+      async leer() {
+        const r = await fetch(url + "?t=" + Date.now(), { headers, cache: "no-store" });
+        if (r.status === 404) {
+          // ¿no existe el archivo o no existe el repo?
+          await this.probarRepo();
+          return null;
+        }
+        if (!r.ok) throw await errorDe(r);
+        const j = await r.json();
+        let txt;
+        if (j.content) txt = b64dec(j.content);
+        else { // archivo > 1 MB: pedirlo crudo
+          const r2 = await fetch(url, { headers: { ...headers, Accept: "application/vnd.github.raw" }, cache: "no-store" });
+          if (!r2.ok) throw await errorDe(r2);
+          txt = await r2.text();
+        }
+        return { sha: j.sha, datos: JSON.parse(txt) };
+      },
+      async escribir(datos, sha) {
+        const body = { message: "Actualizar gastos " + new Date().toLocaleString("es-AR"), content: b64enc(JSON.stringify(datos)) };
+        if (sha) body.sha = sha;
+        const r = await fetch(url, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (r.status === 409 || r.status === 422) return { conflicto: true };
+        if (!r.ok) throw await errorDe(r);
+        const j = await r.json();
+        return { sha: j.content.sha };
       },
     };
   }
-  function mostrarLogin(auth) {
-    let el = document.getElementById("login");
-    if (!el) {
-      el = document.createElement("div"); el.id = "login";
-      el.innerHTML = '<div class="login-card"><b>Gastos del mes</b><p>Entrá con tu cuenta de Google para ver tus gastos.</p><button type="button" class="btn primary" id="loginBtn">Entrar con Google</button><p id="loginErr" class="login-err"></p></div>';
-      document.body.appendChild(el);
-      document.getElementById("loginBtn").onclick = () => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch((e) => { document.getElementById("loginErr").textContent = "No se pudo entrar: " + e.message; });
+
+  async function githubDB(cfg) {
+    const st = baseStore();
+    const api = ghApi(cfg);
+    const estado = lsGet(STATE) || { sha: null, pend: [] };
+    const pend = new Set(estado.pend || []);
+    let sha = estado.sha, timer = null, subiendo = false, ultimo = null;
+    const guardarEstado = () => lsSet(STATE, { sha, pend: [...pend] });
+    const hora = () => new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+
+    async function bajar() {
+      if (subiendo) return;
+      try {
+        const rem = await api.leer();
+        if (!rem) return;
+        if (rem.sha !== sha) { st.applyRemote(rem.datos, pend.size ? pend : null); sha = rem.sha; guardarEstado(); }
+        ultimo = hora();
+        if (!pend.size) statusText("", "Sincronizado " + ultimo);
+      } catch (e) { statusText("err", navigator.onLine ? "Error al sincronizar" : "Sin internet · se guarda en el dispositivo"); console.warn(e); }
     }
-    el.hidden = false;
+    async function subir() {
+      if (subiendo || !pend.size) return;
+      if (!navigator.onLine) { statusText("err", "Sin internet · se sube al volver"); return; }
+      subiendo = true; statusText("saving", "Sincronizando…");
+      try {
+        for (let intento = 0; intento < 3; intento++) {
+          const rem = await api.leer();
+          const base = rem ? rem.datos : { meses: {}, secciones: {} };
+          const enviando = [...pend];
+          for (const k of enviando) { const [c, id] = k.split("/"); base[c] = base[c] || {}; if (id in st.data[c]) base[c][id] = st.data[c][id]; else delete base[c][id]; }
+          const res = await api.escribir(base, rem ? rem.sha : null);
+          if (res.conflicto) continue;
+          sha = res.sha; enviando.forEach((k) => pend.delete(k)); guardarEstado();
+          subiendo = false;
+          st.applyRemote(base, pend.size ? pend : null); // trae lo que haya cambiado otro dispositivo
+          ultimo = hora(); statusText("", "Sincronizado " + ultimo);
+          if (pend.size) programar();
+          return;
+        }
+        throw new Error("Otro dispositivo está guardando al mismo tiempo. Reintento en unos segundos.");
+      } catch (e) {
+        statusText("err", "No se sincronizó · reintenta solo"); console.warn(e);
+        setTimeout(subir, 15000);
+      } finally { subiendo = false; }
+    }
+    function programar() { clearTimeout(timer); timer = setTimeout(subir, 1500); }
+    const onWrite = (k) => { pend.add(k); guardarEstado(); statusText("saving", "Guardado en el dispositivo · subiendo…"); programar(); };
+
+    // primera sincronización
+    statusText("saving", "Conectando con GitHub…");
+    let rem, sinRed = false;
+    try { rem = await api.leer(); }
+    catch (e) { if (e instanceof TypeError) sinRed = true; else throw e; } // TypeError = sin internet
+    if (sinRed) {
+      statusText("err", "Sin internet · se guarda en el dispositivo");
+    } else if (!rem) {
+      // repo vacío: este dispositivo sube lo que tiene
+      for (const c of COLLS) for (const id in st.data[c]) pend.add(c + "/" + id);
+      guardarEstado(); await subir();
+    } else if (!sha) {
+      st.applyRemote(rem.datos); sha = rem.sha; pend.clear(); guardarEstado();
+      statusText("", "Sincronizado " + hora());
+    } else {
+      if (rem.sha !== sha) { st.applyRemote(rem.datos, pend.size ? pend : null); sha = rem.sha; guardarEstado(); }
+      if (pend.size) programar(); else statusText("", "Sincronizado " + hora());
+    }
+    // traer cambios de otros dispositivos
+    setInterval(() => { if (document.visibilityState === "visible" && !pend.size) bajar(); }, 20000);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { pend.size ? subir() : bajar(); } else if (pend.size) subir(); });
+    window.addEventListener("online", () => { pend.size ? subir() : bajar(); });
+    window.addEventListener("beforeunload", (e) => { if (pend.size) { subir(); e.preventDefault(); e.returnValue = ""; } });
+
+    return {
+      modo: "github", repo: cfg.owner + "/" + cfg.repo,
+      reemplazarTodo(nuevo) {
+        const todo = new Set([...COLLS.flatMap((c) => Object.keys(st.data[c]).map((id) => c + "/" + id)), ...COLLS.flatMap((c) => Object.keys(nuevo[c] || {}).map((id) => c + "/" + id))]);
+        st.applyRemote(nuevo); todo.forEach((k) => pend.add(k)); guardarEstado(); programar();
+      },
+      collection: (c) => st.collection(c, onWrite),
+    };
   }
-  function ocultarLogin() { const el = document.getElementById("login"); if (el) el.hidden = true; }
+
+  // ---------- pantalla para conectar ----------
+  function abrirConfig() {
+    let d = document.getElementById("syncDlg");
+    if (!d) {
+      d = document.createElement("dialog"); d.id = "syncDlg";
+      d.innerHTML = '<form id="syncForm"><h3>Sincronizar entre dispositivos</h3>' +
+        '<p>Tus datos se guardan en un repositorio <b>privado</b> de tu GitHub. Completá esto una vez en cada dispositivo (compu y celular).</p>' +
+        '<label class="sf">Usuario de GitHub<input id="sfOwner" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gdc119" required></label>' +
+        '<label class="sf">Repositorio privado para los datos<input id="sfRepo" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gastos-datos" required></label>' +
+        '<label class="sf">Token<input id="sfToken" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_..." required></label>' +
+        '<p class="sf-err" id="sfErr"></p>' +
+        '<div class="row"><button class="btn" type="button" id="sfCancel">Cancelar</button><button class="btn primary" type="submit" id="sfOk">Conectar</button></div></form>';
+      document.body.appendChild(d);
+      d.querySelector("#sfCancel").onclick = () => d.close();
+      d.querySelector("#syncForm").onsubmit = async (e) => {
+        e.preventDefault();
+        const cfg = { owner: d.querySelector("#sfOwner").value.trim(), repo: d.querySelector("#sfRepo").value.trim(), token: d.querySelector("#sfToken").value.trim() };
+        const err = d.querySelector("#sfErr"), ok = d.querySelector("#sfOk");
+        err.textContent = ""; ok.disabled = true; ok.textContent = "Probando…";
+        try {
+          const api = ghApi(cfg);
+          const info = await api.probarRepo();
+          if (!info.privado) throw new Error("Ese repositorio es PÚBLICO: cualquiera vería tus datos. Usá un repositorio privado.");
+          const rem = await api.leer();
+          const local = lsGet(KEY) || { meses: {} };
+          const nLocal = Object.keys(local.meses || {}).length;
+          if (rem && nLocal) {
+            const usarGithub = confirm("GitHub ya tiene datos guardados (" + Object.keys(rem.datos.meses || {}).length + " meses).\n\nAceptar = usar los datos de GitHub en este dispositivo (lo normal).\nCancelar = no conectar todavía.");
+            if (!usarGithub) { ok.disabled = false; ok.textContent = "Conectar"; return; }
+          }
+          lsSet(CFG, cfg); lsDel(STATE);
+          location.reload();
+        } catch (ex) { err.textContent = ex.message || String(ex); ok.disabled = false; ok.textContent = "Conectar"; }
+      };
+    }
+    const cur = lsGet(CFG) || {};
+    d.querySelector("#sfOwner").value = cur.owner || "";
+    d.querySelector("#sfRepo").value = cur.repo || "gastos-datos";
+    d.querySelector("#sfToken").value = "";
+    d.showModal();
+  }
+  function desconectar() {
+    if (!confirm("¿Dejar de sincronizar en este dispositivo?\nTus datos quedan guardados acá y en GitHub; solo se borra el token de este dispositivo.")) return;
+    lsDel(CFG); lsDel(STATE); location.reload();
+  }
+  window.gmSync = abrirConfig; window.gmUnsync = desconectar;
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest('[data-act="sync-setup"],[data-act="sync-off"]'); if (!a) return;
+    e.preventDefault(); a.dataset.act === "sync-setup" ? abrirConfig() : desconectar();
+  });
 
   window.obtenerDB = async function () {
     if (window.claude && window.claude.use) { const d = await window.claude.use("db"); if (d) return d; }
-    if (FIREBASE_CONFIG) return firebaseDB();
+    const cfg = lsGet(CFG);
+    if (cfg && cfg.token) {
+      try { return await githubDB(cfg); }
+      catch (e) {
+        statusText("err", "Error al sincronizar");
+        setTimeout(() => alert("No se pudo sincronizar con GitHub:\n" + (e.message || e) + "\n\nPor ahora se usan los datos guardados en este dispositivo. Revisá la conexión desde «Sincronizar entre dispositivos…»."), 300);
+        return localDB();
+      }
+    }
     return localDB();
   };
 })();
@@ -602,7 +745,7 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
     q.dirty = false; q.busy = true;
     try {
       if (doc) await db.collection(coll).doc(id).set(clone(doc)); else await db.collection(coll).doc(id).delete();
-      setStatus("", "Guardado");
+      if (db.modo !== "github") setStatus("", "Guardado");
     } catch (e) {
       if (e && e.code === "unavailable") { q.dirty = true; setTimeout(() => { q.busy = false; flush(coll, id); }, 900 + Math.random() * 900); return; }
       if (e && e.code === "invalid_argument") { S.canWrite = false; setStatus("err", "Solo lectura"); toast("No tenés permiso para guardar cambios"); }
@@ -640,10 +783,10 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
     for (const [id, d] of S.secciones) if (!SECCIONES.some((s) => s[0] === id)) h += '<a href="#s-' + id + '"' + (S.route === "s-" + id ? ' aria-current="page"' : "") + ">" + esc(d.nombre) + "</a>";
     h += "</div>";
     if (db && db.modo) {
-      h += '<div class="navgroup"><h4>Respaldo</h4><a href="#" data-act="backup-dl">Descargar respaldo</a><a href="#" data-act="backup-load">Cargar respaldo…</a>';
-      if (db.modo === "firebase") h += '<a href="#" data-act="logout">Salir <small>' + esc(db.usuario || "") + "</small></a>";
-      else h += '<span style="font-size:12px;color:var(--muted);padding:2px 8px 0">Guardado en este navegador</span>';
-      h += "</div>";
+      h += '<div class="navgroup"><h4>Sincronización</h4>';
+      if (db.modo === "github") h += '<span style="font-size:12px;color:var(--muted);padding:2px 8px">Sincronizado con GitHub<br>' + esc(db.repo) + '</span><a href="#" data-act="sync-off">Dejar de sincronizar acá</a>';
+      else h += '<span style="font-size:12px;color:var(--muted);padding:2px 8px">Guardado solo en este dispositivo</span><a href="#" data-act="sync-setup">Sincronizar entre dispositivos…</a>';
+      h += '</div><div class="navgroup"><h4>Respaldo</h4><a href="#" data-act="backup-dl">Descargar respaldo</a><a href="#" data-act="backup-load">Cargar respaldo…</a></div>';
     }
     $("nav").innerHTML = h;
     let o = '<option value="resumen">Resumen</option><optgroup label="Meses">';
@@ -652,10 +795,10 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
     for (const [id, d] of S.secciones) o += '<option value="s-' + id + '">' + esc(d.nombre) + "</option>";
     o += "</optgroup>";
     if (S.canWrite && meses.length) o += '<option value="__new">+ Crear mes siguiente</option>';
-    if (db && db.modo) o += '<optgroup label="Respaldo"><option value="__dl">Descargar respaldo</option><option value="__load">Cargar respaldo…</option>' + (db.modo === "firebase" ? '<option value="__out">Salir</option>' : "") + "</optgroup>";
+    if (db && db.modo) o += '<optgroup label="Sincronización">' + (db.modo === "github" ? '<option value="__unsync">Dejar de sincronizar acá</option>' : '<option value="__sync">Sincronizar entre dispositivos…</option>') + '</optgroup><optgroup label="Respaldo"><option value="__dl">Descargar respaldo</option><option value="__load">Cargar respaldo…</option></optgroup>';
     $("navsel").innerHTML = o; $("navsel").value = S.route;
   }
-  $("navsel").addEventListener("change", (e) => { const v = e.target.value; if (v === "__new") { e.target.value = S.route; newMonth(); } else if (v === "__dl") { e.target.value = S.route; backupDl(); } else if (v === "__load") { e.target.value = S.route; backupLoad(); } else if (v === "__out") { e.target.value = S.route; db.salir(); } else go(v); });
+  $("navsel").addEventListener("change", (e) => { const v = e.target.value; if (v === "__new") { e.target.value = S.route; newMonth(); } else if (v === "__dl") { e.target.value = S.route; backupDl(); } else if (v === "__load") { e.target.value = S.route; backupLoad(); } else if (v === "__sync") { e.target.value = S.route; window.gmSync(); } else if (v === "__unsync") { e.target.value = S.route; window.gmUnsync(); } else go(v); });
 
   // ---------- charts ----------
   function donut(slices, centerVal, centerLab) {
@@ -804,7 +947,7 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
   // ---------- pages ----------
   function pageResumen() {
     const meses = mesesOrdenados();
-    if (!meses.length) return '<div class="page"><div class="emptystate"><h2>Todavía no hay meses</h2><p>Para cargar tus datos, tocá <b>Cargar respaldo…</b> (en el menú, o en el selector de arriba en el celular) y elegí el archivo <b>gastos-respaldo.json</b>.</p><p><button type="button" class="btn primary" data-act="backup-load">Cargar respaldo…</button></p></div></div>';
+    if (!meses.length) return '<div class="page"><div class="emptystate"><h2>Todavía no hay meses</h2><p>Si ya usás la app en otro dispositivo, tocá <b>Sincronizar entre dispositivos…</b>. Si tenés un archivo de respaldo, tocá <b>Cargar respaldo…</b>.</p><p style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button type="button" class="btn primary" data-act="sync-setup">Sincronizar entre dispositivos…</button><button type="button" class="btn" data-act="backup-load">Cargar respaldo…</button></p></div></div>';
     const last = meses[meses.length - 1], c = monthCalc(last);
     const tot = meses.reduce((a, m) => { const x = monthCalc(m); a.i += x.ingresos; a.g += x.gastos; return a; }, { i: 0, g: 0 });
     let h = '<div class="page"><div class="pagehead"><div><div class="eyebrow">Resumen</div><h1>Cómo vienen los meses</h1></div><div class="headactions"><a class="btn primary" href="#mes-' + last.periodo + '">Ir a ' + esc(last.nombre) + " →</a></div></div>";
@@ -1038,7 +1181,6 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
     if (act === "new-month") { newMonth(); return; }
     if (act === "backup-dl") { e.preventDefault(); backupDl(); return; }
     if (act === "backup-load") { e.preventDefault(); backupLoad(); return; }
-    if (act === "logout") { e.preventDefault(); db.salir(); return; }
     if (act === "filter") { S.filtro = el.dataset.f; rerender(); return; }
     if (act === "mtab") {
       S.mesTab = el.dataset.tab; try { localStorage.setItem("gm:tab", S.mesTab); } catch (e2) {}
@@ -1183,7 +1325,7 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
     toast(nd.nombre + " creado a partir de " + src.nombre);
   }
 
-  // ---------- respaldo (solo fuera de Claude) ----------
+  // ---------- respaldo ----------
   function backupDl() {
     const out = { exportado: new Date().toISOString(), meses: Object.fromEntries(S.meses), secciones: Object.fromEntries(S.secciones) };
     const blob = new Blob([JSON.stringify(out, null, 1)], { type: "application/json" });
@@ -1198,12 +1340,11 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
       const f = inp.files[0]; if (!f) return;
       let nuevo; try { nuevo = JSON.parse(await f.text()); } catch (e) { toast("Ese archivo no es un respaldo válido"); return; }
       if (!nuevo || !nuevo.meses) { toast("Ese archivo no es un respaldo de Gastos del mes"); return; }
-      const ok = await ask("Cargar respaldo", "Se reemplazan todos los datos actuales por los del archivo (" + Object.keys(nuevo.meses).length + " meses).", "", "Reemplazar", { noInput: true, danger: true });
+      const ok = await ask("Cargar respaldo", "Se reemplazan todos los datos actuales por los del archivo (" + Object.keys(nuevo.meses).length + " meses)" + (db.modo === "github" ? ", también en GitHub y en tus otros dispositivos." : "."), "", "Reemplazar", { noInput: true, danger: true });
       if (!ok) return;
-      setStatus("saving", "Guardando…");
-      try { await db.reemplazarTodo(nuevo); } catch (e) { setStatus("err", "No se guardó"); toast("No se pudo cargar: " + e.message); return; }
+      try { await db.reemplazarTodo({ meses: nuevo.meses || {}, secciones: nuevo.secciones || {} }); } catch (e) { toast("No se pudo cargar: " + e.message); return; }
       S.meses = new Map(Object.entries(nuevo.meses || {})); S.secciones = new Map(Object.entries(nuevo.secciones || {}));
-      setStatus("", "Guardado"); go("resumen"); renderAll(true); toast("Respaldo cargado");
+      go("resumen"); renderAll(true); toast("Respaldo cargado");
     };
     inp.click();
   }
@@ -1234,7 +1375,7 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
         const ch = applySnap(coll, snap);
         const first = !S.loaded[coll] && !snap.metadata.fromCache;
         if (first) S.loaded[coll] = true;
-        if (coll === "meses" && first) { clearTimeout(timer); setStatus(S.canWrite ? "" : "err", S.canWrite ? "Guardado" : "Solo lectura"); }
+        if (coll === "meses" && first) { clearTimeout(timer); if (db.modo !== "github") setStatus(S.canWrite ? "" : "err", S.canWrite ? "Guardado" : "Solo lectura"); }
         if (ch || first) rerender();
       }, () => { clearTimeout(timer); setStatus("err", "Sin conexión"); if (!S.meses.size) $("main").innerHTML = '<div class="page"><div class="emptystate"><h2>No se pudieron cargar tus datos</h2><p>Recargá la página en un momento.</p></div></div>'; });
     }
@@ -1244,7 +1385,6 @@ const EMAIL_PERMITIDO = ""; // tu email de Google, ej: "sofi@gmail.com"
 </script>
 
 <script>
-// App instalable: registra el service worker y ofrece el botón "Instalar app"
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
 }
@@ -1253,40 +1393,10 @@ window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault(); pedidoInstalar = e;
   if (document.getElementById("installBtn")) return;
   const b = document.createElement("button"); b.id = "installBtn"; b.type = "button"; b.className = "btn primary install-btn"; b.textContent = "Instalar app";
-  b.onclick = async () => { pedidoInstalar.prompt(); await pedidoInstalar.userChoice; pedidoInstalar = null; b.remove(); };
+  b.onclick = async () => { pedidoInstalar.prompt(); await pedidoInstalar.userChoice; pedidoInstalar = null; b.remove(); const c = document.getElementById("installBtn2"); if (c) c.remove(); };
   const side = document.querySelector("aside.side .brand"); if (side) side.after(b);
   const top = document.querySelector(".topbar"); if (top) { const c = b.cloneNode(true); c.id = "installBtn2"; c.className = "btn primary sm"; c.onclick = b.onclick; top.appendChild(c); }
 });
 </script>
 </body>
 </html>
-<!--
-================================================================================
- CÓMO SINCRONIZAR ENTRE CELULAR Y COMPU (Firebase, gratis)
-================================================================================
- 1. Entrá a https://console.firebase.google.com y creá un proyecto (ej: "mis-gastos").
- 2. Compilación → Firestore Database → Crear base de datos (modo producción,
-    ubicación southamerica-east1).
- 3. Compilación → Authentication → Comenzar → Método de acceso → Google → Habilitar.
- 4. Firestore → Reglas → pegá esto (cambiá el email por el tuyo) y Publicar:
-
-    rules_version = '2';
-    service cloud.firestore {
-      match /databases/{database}/documents {
-        match /{document=**} {
-          allow read, write: if request.auth != null
-            && request.auth.token.email == "TU_EMAIL@gmail.com";
-        }
-      }
-    }
-
- 5. Configuración del proyecto (ícono ⚙) → General → Tus apps → Web (</>) →
-    registrá la app y copiá el objeto firebaseConfig.
- 6. En este archivo, buscá "const FIREBASE_CONFIG = null;" y reemplazá null por
-    ese objeto. En EMAIL_PERMITIDO poné tu mismo email.
- 7. Subí index.html a un hosting (Netlify Drop, GitHub Pages o Firebase Hosting).
-    Si usás otro dominio, agregalo en Authentication → Configuración →
-    Dominios autorizados.
- 8. La primera vez que entres con Google se cargan solos tus datos iniciales.
-================================================================================
--->
